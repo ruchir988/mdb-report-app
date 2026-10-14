@@ -8,18 +8,16 @@ import traceback
 
 st.set_page_config(page_title="AVVNL Accounts & Reports", layout="wide")
 
-# Database save karne ke liye permanent directory
 UPLOAD_DIR = "uploaded_dbs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# User Credentials (Aap yahan naye users aur passwords add kar sakte hain)
 USER_CREDENTIALS = {
     "admin": "admin123",
     "ruchir": "avvnl@2026",
     "user": "user123"
 }
 
-# --- Helper Functions for MDBTools ---
+# --- Helper Functions ---
 def get_tables(mdb_path):
     try:
         cmd = ["mdb-tables", "-1", mdb_path]
@@ -47,13 +45,13 @@ def find_col(df, candidates):
                 return orig
     return df.columns[0] if len(df.columns) > 0 else None
 
-# --- Session State Setup ---
+# --- Session State ---
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 if "username" not in st.session_state:
     st.session_state["username"] = ""
 
-# --- LOGIN SCREEN ---
+# --- Login Screen ---
 if not st.session_state["logged_in"]:
     st.markdown("<h2 style='text-align: center;'>🔐 AVVNL Accounts Portal - User Login</h2>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 1.2, 1])
@@ -70,14 +68,13 @@ if not st.session_state["logged_in"]:
                     st.success(f"Welcome, {uname}!")
                     st.rerun()
                 else:
-                    st.error("Invalid Username ya Password! Kripya dobara check karein.")
+                    st.error("Invalid Username ya Password!")
     st.stop()
 
-# --- MAIN APPLICATION (AFTER LOGIN) ---
+# --- Main App ---
 username = st.session_state["username"]
 user_mdb_path = os.path.join(UPLOAD_DIR, f"{username}_database.mdb")
 
-# Sidebar Top Menu
 st.sidebar.markdown(f"👤 **Logged in as:** `{username}`")
 if st.sidebar.button("Logout"):
     st.session_state["logged_in"] = False
@@ -86,18 +83,35 @@ if st.sidebar.button("Logout"):
 
 st.sidebar.markdown("---")
 
-# Persistent Database Handling
+# Persistent Upload with Live % Progress
 if not os.path.exists(user_mdb_path):
-    st.info("👋 Pehli baar setup karne ke liye apna `.mdb` database file upload karein. Ye hamesha ke liye save rahega.")
+    st.info("👋 Pehli baar setup karne ke liye apna `.mdb` file upload karein.")
     up_file = st.file_uploader("Upload .mdb Database File", type=["mdb"])
+    
     if up_file is not None:
+        prog_bar = st.progress(0)
+        status_text = st.empty()
+        
+        file_size = up_file.size
+        chunk_size = 1024 * 512  # 512 KB
+        bytes_written = 0
+        
         with open(user_mdb_path, "wb") as f:
-            f.write(up_file.read())
+            while True:
+                chunk = up_file.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                bytes_written += len(chunk)
+                percent = min(100, int((bytes_written / file_size) * 100))
+                prog_bar.progress(percent)
+                status_text.text(f"Saving Database: {percent}% ({bytes_written // (1024*1024)} MB / {file_size // (1024*1024)} MB)")
+        
         st.success("Database successfully save ho gaya!")
         st.rerun()
     st.stop()
 
-# Agar file already saved hai
+# Change DB Option
 with st.sidebar.expander("⚙️ Database Management", expanded=False):
     st.write("Current Database: `Active`")
     if st.button("Change / Upload New Database"):
@@ -108,7 +122,7 @@ with st.sidebar.expander("⚙️ Database Management", expanded=False):
 try:
     tables = get_tables(user_mdb_path)
     if not tables:
-        st.error("Database tables read nahi ho paye. File corrupted ho sakti hai.")
+        st.error("Database tables read nahi ho paye.")
         st.stop()
 
     # Load Account Master
@@ -118,12 +132,15 @@ try:
         acc_code_col = find_col(acc_master, ["Account_Code", "AccountCode", "Code"])
         acc_name_col = find_col(acc_master, ["Account_Name", "AccountName", "Name", "Desc"])
 
-        acc_master['Display_Acc'] = (
-            acc_master[acc_code_col].astype(str) + " - " + acc_master[acc_name_col].astype(str)
-        )
-        acc_list = sorted(acc_master['Display_Acc'].dropna().unique().tolist())
+        # Direct ID mapping dictionary taaki name parsing ki zarurat hi na pade
+        acc_master['Clean_Code'] = acc_master[acc_code_col].astype(str).str.strip()
+        acc_master['Clean_Name'] = acc_master[acc_name_col].astype(str).str.strip()
+        acc_master['Display_Acc'] = acc_master['Clean_Code'] + " - " + acc_master['Clean_Name']
+        
+        acc_dict = dict(zip(acc_master['Display_Acc'], acc_master[acc_id_col]))
+        acc_list = sorted(list(acc_dict.keys()))
     else:
-        st.error("AccountMaster table is database me nahi mila.")
+        st.error("AccountMaster table nahi mila.")
         st.stop()
 
     # Load Location Master
@@ -139,7 +156,6 @@ try:
         )
         loc_map = dict(zip(loc_master[loc_id_col], loc_master['Display_Loc']))
 
-    # Sidebar Options
     report_type = st.sidebar.radio("Select Report Category", ["Account General Ledger", "Trial Balance (TB)", "Raw Table Browser"])
 
     # ==========================================================
@@ -151,7 +167,7 @@ try:
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             selected_acc = st.selectbox("Select Ledger Account", acc_list)
-            acc_selected_code = selected_acc.split(" - ")[0].strip()
+            target_acc_id = acc_dict[selected_acc]  # Direct ID mapping
         with c2:
             start_date = st.date_input("Start Date", datetime.date(2026, 4, 1))
         with c3:
@@ -164,7 +180,7 @@ try:
                 bal_data = read_table(user_mdb_path, "BalanceData") if "BalanceData" in tables else pd.DataFrame()
 
                 if vd.empty or vh.empty:
-                    st.warning("VoucherDetail ya VoucherHeader table empty hai.")
+                    st.warning("VoucherDetail / VoucherHeader tables empty hain.")
                     st.stop()
 
                 vd_vh_id = find_col(vd, ["VD_VHIdNo", "VHIdNo", "VH_Id", "HeaderId"])
@@ -180,16 +196,11 @@ try:
                 vd_supp_no = find_col(vd, ["VD_SuppVoucherNo", "SuppVoucherNo"])
                 vd_supp_date = find_col(vd, ["VD_SuppVoucherDate", "SuppVoucherDate"])
 
-                acc_match = acc_master[acc_master[acc_code_col] == acc_selected_code]
-                if acc_match.empty:
-                    st.error("Account ID match nahi hua.")
-                    st.stop()
-                target_acc_id = acc_match.iloc[0][acc_id_col]
+                # Filter target transactions safely
+                vd[vd_acc_id] = pd.to_numeric(vd[vd_acc_id], errors='coerce')
+                vd_filtered = vd[vd[vd_acc_id] == float(target_acc_id)].copy()
 
-                # Filter by account
-                vd_filtered = vd[vd[vd_acc_id] == target_acc_id].copy()
-
-                # Merge VoucherDetail with VoucherHeader
+                # Merge VoucherDetail with Header
                 merged_v = pd.merge(vd_filtered, vh, left_on=vd_vh_id, right_on=vh_pk, suffixes=('', '_vh'))
                 merged_v['V_Date'] = pd.to_datetime(merged_v[vh_date_col], errors='coerce')
                 
@@ -204,7 +215,8 @@ try:
                     b_dr = find_col(bal_data, ["Balance_DebitAmount", "DebitAmount", "Debit"])
                     b_cr = find_col(bal_data, ["Balance_CreditAmount", "CreditAmount", "Credit"])
                     
-                    bal_rows = bal_data[bal_data[b_acc] == target_acc_id]
+                    bal_data[b_acc] = pd.to_numeric(bal_data[b_acc], errors='coerce')
+                    bal_rows = bal_data[bal_data[b_acc] == float(target_acc_id)]
                     if not bal_rows.empty:
                         dr_sum = pd.to_numeric(bal_rows[b_dr], errors='coerce').fillna(0.0).sum()
                         cr_sum = pd.to_numeric(bal_rows[b_cr], errors='coerce').fillna(0.0).sum()
@@ -222,7 +234,7 @@ try:
 
                 ledger_df['Location Name'] = ledger_df[vd_loc_col].map(loc_map).fillna(ledger_df[vd_loc_col].astype(str))
 
-                # Output without recurring page breaks
+                # Output without repeated page headers
                 final_view = pd.DataFrame({
                     "Voucher Date": ledger_df['V_Date'].dt.strftime('%d-%b-%Y'),
                     "Voucher No.": ledger_df[vh_no_col],
@@ -256,7 +268,7 @@ try:
                 st.download_button(
                     label="📥 Download Continuous Ledger (Excel)",
                     data=out.getvalue(),
-                    file_name=f"Ledger_{acc_selected_code}_{start_date}_to_{end_date}.xlsx",
+                    file_name=f"Ledger_{selected_acc[:15]}_{start_date}_to_{end_date}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
@@ -285,6 +297,9 @@ try:
                 b_loc = find_col(bal_data, ["Balance_LocationIdNo", "LocationIdNo", "LocationId"])
                 b_dr = find_col(bal_data, ["Balance_DebitAmount", "DebitAmount", "Debit"])
                 b_cr = find_col(bal_data, ["Balance_CreditAmount", "CreditAmount", "Credit"])
+
+                bal_data[b_acc] = pd.to_numeric(bal_data[b_acc], errors='coerce')
+                acc_master[acc_id_col] = pd.to_numeric(acc_master[acc_id_col], errors='coerce')
 
                 tb_df = pd.merge(bal_data, acc_master, left_on=b_acc, right_on=acc_id_col, how="left")
                 tb_df['Location_Display'] = tb_df[b_loc].map(loc_map).fillna(tb_df[b_loc].astype(str))
