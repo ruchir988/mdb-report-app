@@ -327,4 +327,44 @@ try:
 
                     out_tb = io.BytesIO()
                     with pd.ExcelWriter(out_tb, engine='openpyxl') as wr:
-                        tb_res.to_excel(wr
+                        tb_res.to_excel(wr, index=False, sheet_name="TB_Merged_Single")
+                    st.download_button("📥 Download Merged Single TB (Excel)", out_tb.getvalue(), "TB_Merged_Single.xlsx")
+
+                elif tb_type == "Merged Splitted":
+                    tb_res = bal_data.groupby(['Display_Acc', 'Location_Display']).agg({
+                        'Year Opening Dr': 'sum',
+                        'Year Opening Cr': 'sum'
+                    }).reset_index()
+
+                    st.dataframe(tb_res, use_container_width=True, height=600)
+
+                    out_tb = io.BytesIO()
+                    with pd.ExcelWriter(out_tb, engine='openpyxl') as wr:
+                        tb_res.to_excel(wr, index=False, sheet_name="TB_Merged_Splitted")
+                    st.download_button("📥 Download Merged Splitted TB (Excel)", out_tb.getvalue(), "TB_Merged_Splitted.xlsx")
+
+                elif tb_type == "Separate":
+                    locs = sorted(bal_data['Location_Display'].dropna().unique().tolist())
+                    chosen_loc = st.selectbox("Choose Location", locs)
+
+                    tb_loc = bal_data[bal_data['Location_Display'] == chosen_loc].groupby(['Display_Acc']).agg({
+                        'Year Opening Dr': 'sum',
+                        'Year Opening Cr': 'sum'
+                    }).reset_index()
+
+                    st.dataframe(tb_loc, use_container_width=True, height=600)
+
+    # ==========================================================
+    # 3. RAW TABLE BROWSER
+    # ==========================================================
+    elif report_type == "Raw Table Browser":
+        st.subheader("🔍 Explore Tables")
+        sel_t = st.selectbox("Select Table", tables)
+        if sel_t:
+            df_view = read_table(user_mdb_path, sel_t)
+            st.write(f"Total Rows: {len(df_view)} | Columns: {list(df_view.columns)}")
+            st.dataframe(df_view.head(200), use_container_width=True)
+
+except Exception as e:
+    st.error(f"Execution Error: {e}")
+    st.code(traceback.format_exc)
