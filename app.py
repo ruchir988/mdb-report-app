@@ -60,7 +60,6 @@ if not st.session_state["logged_in"]:
             uname = st.text_input("Username").strip().lower()
             upass = st.text_input("Password", type="password")
             submit_btn = st.form_submit_button("Login", use_container_width=True)
-            
             if submit_btn:
                 if uname in USER_CREDENTIALS and USER_CREDENTIALS[uname] == upass:
                     st.session_state["logged_in"] = True
@@ -71,7 +70,6 @@ if not st.session_state["logged_in"]:
                     st.error("Invalid Username ya Password!")
     st.stop()
 
-# --- Main App ---
 username = st.session_state["username"]
 user_mdb_path = os.path.join(UPLOAD_DIR, f"{username}_database.mdb")
 
@@ -83,19 +81,16 @@ if st.sidebar.button("Logout"):
 
 st.sidebar.markdown("---")
 
-# Persistent Upload with Live % Progress
+# Persistent Upload with Live Progress Bar
 if not os.path.exists(user_mdb_path):
-    st.info("👋 Pehli baar setup karne ke liye apna `.mdb` file upload karein.")
+    st.info("👋 Pehli baar setup karne ke liye apna `.mdb` database file upload karein.")
     up_file = st.file_uploader("Upload .mdb Database File", type=["mdb"])
-    
     if up_file is not None:
         prog_bar = st.progress(0)
         status_text = st.empty()
-        
         file_size = up_file.size
-        chunk_size = 1024 * 512  # 512 KB
+        chunk_size = 1024 * 512
         bytes_written = 0
-        
         with open(user_mdb_path, "wb") as f:
             while True:
                 chunk = up_file.read(chunk_size)
@@ -105,15 +100,13 @@ if not os.path.exists(user_mdb_path):
                 bytes_written += len(chunk)
                 percent = min(100, int((bytes_written / file_size) * 100))
                 prog_bar.progress(percent)
-                status_text.text(f"Saving Database: {percent}% ({bytes_written // (1024*1024)} MB / {file_size // (1024*1024)} MB)")
-        
-        st.success("Database successfully save ho gaya!")
+                status_text.text(f"Saving Database: {percent}%")
+        st.success("Database save ho gaya!")
         st.rerun()
     st.stop()
 
-# Change DB Option
 with st.sidebar.expander("⚙️ Database Management", expanded=False):
-    st.write("Current Database: `Active`")
+    st.write("Database: `Active`")
     if st.button("Change / Upload New Database"):
         if os.path.exists(user_mdb_path):
             os.remove(user_mdb_path)
@@ -125,36 +118,45 @@ try:
         st.error("Database tables read nahi ho paye.")
         st.stop()
 
-    # Load Account Master
-    if "AccountMaster" in tables:
-        acc_master = read_table(user_mdb_path, "AccountMaster")
-        acc_id_col = find_col(acc_master, ["Account_IdNo", "AccountId", "IdNo", "Id"])
-        acc_code_col = find_col(acc_master, ["Account_Code", "AccountCode", "Code"])
-        acc_name_col = find_col(acc_master, ["Account_Name", "AccountName", "Name", "Desc"])
-
-        # Direct ID mapping dictionary taaki name parsing ki zarurat hi na pade
-        acc_master['Clean_Code'] = acc_master[acc_code_col].astype(str).str.strip()
-        acc_master['Clean_Name'] = acc_master[acc_name_col].astype(str).str.strip()
-        acc_master['Display_Acc'] = acc_master['Clean_Code'] + " - " + acc_master['Clean_Name']
-        
-        acc_dict = dict(zip(acc_master['Display_Acc'], acc_master[acc_id_col]))
-        acc_list = sorted(list(acc_dict.keys()))
-    else:
-        st.error("AccountMaster table nahi mila.")
+    # =========================================================================
+    # CORE LOGIC: ONLY USE MiscMaster FOR ALL ACCOUNTS & LOCATIONS
+    # =========================================================================
+    if "MiscMaster" not in tables:
+        st.error("Database me `MiscMaster` table nahi mila.")
         st.stop()
 
-    # Load Location Master
-    loc_map = {}
-    if "LocationMaster" in tables:
-        loc_master = read_table(user_mdb_path, "LocationMaster")
-        loc_id_col = find_col(loc_master, ["Location_IdNo", "LocationId", "IdNo", "Id"])
-        loc_code_col = find_col(loc_master, ["Location_Code", "LocationCode", "Code"])
-        loc_name_col = find_col(loc_master, ["Location_Name", "LocationName", "Name"])
-        
-        loc_master['Display_Loc'] = (
-            loc_master[loc_code_col].astype(str) + "-" + loc_master[loc_name_col].astype(str)
-        )
-        loc_map = dict(zip(loc_master[loc_id_col], loc_master['Display_Loc']))
+    misc_df = read_table(user_mdb_path, "MiscMaster")
+    misc_id_col = find_col(misc_df, ["Misc_IdNo", "MiscIdNo", "IdNo", "Id"])
+    misc_code_col = find_col(misc_df, ["Misc_Code", "MiscCode", "Code"])
+    misc_name_col = find_col(misc_df, ["Misc_Name", "MiscName", "Name", "Desc"])
+    misc_type_col = find_col(misc_df, ["Misc_Type_Id", "Misc_TypeId", "TypeId", "Type"])
+
+    misc_df[misc_id_col] = pd.to_numeric(misc_df[misc_id_col], errors='coerce')
+    misc_df['Clean_Code'] = misc_df[misc_code_col].astype(str).str.strip()
+    misc_df['Clean_Name'] = misc_df[misc_name_col].astype(str).str.strip()
+    misc_df['Display'] = misc_df['Clean_Code'] + " - " + misc_df['Clean_Name']
+
+    # Read VoucherDetail to identify IDs used as Accounts vs Locations
+    vd = read_table(user_mdb_path, "VoucherDetail")
+    vd_acc_col = find_col(vd, ["VD_AccountIdNo", "AccountIdNo", "AccountId"])
+    vd_loc_col = find_col(vd, ["VD_LocationIdNo", "LocationIdNo", "LocationId"])
+    
+    used_acc_ids = set(pd.to_numeric(vd[vd_acc_col], errors='coerce').dropna().unique())
+    used_loc_ids = set(pd.to_numeric(vd[vd_loc_col], errors='coerce').dropna().unique())
+
+    # Build Master Mapping Dictionaries
+    all_misc_map = dict(zip(misc_df[misc_id_col], misc_df['Display']))
+    all_code_to_id = dict(zip(misc_df['Clean_Code'], misc_df[misc_id_col]))
+
+    # Filter Accounts (Used in VD_AccountIdNo OR containing dots like '23.101', '10.101')
+    acc_filter = misc_df[misc_df[misc_id_col].isin(used_acc_ids) | misc_df['Clean_Code'].str.contains(r'^\d{2}\.', regex=True)].copy()
+    acc_map = dict(zip(acc_filter['Display'], acc_filter[misc_id_col]))
+    acc_list = sorted(list(acc_map.keys()))
+
+    # Filter Locations (Used in VD_LocationIdNo)
+    loc_filter = misc_df[misc_df[misc_id_col].isin(used_loc_ids)].copy()
+    loc_map = dict(zip(loc_filter['Display'], loc_filter[misc_id_col]))
+    loc_list = sorted(list(loc_map.keys()))
 
     report_type = st.sidebar.radio("Select Report Category", ["Account General Ledger", "Trial Balance (TB)", "Raw Table Browser"])
 
@@ -162,109 +164,113 @@ try:
     # 1. ACCOUNT GENERAL LEDGER
     # ==========================================================
     if report_type == "Account General Ledger":
-        st.subheader("📖 Account General Ledger")
-        
-        c1, c2, c3 = st.columns([2, 1, 1])
+        st.subheader("📖 Account General Ledger (via MiscMaster)")
+
+        c1, c2, c3, c4 = st.columns([2, 1.5, 1, 1])
         with c1:
             selected_acc = st.selectbox("Select Ledger Account", acc_list)
-            target_acc_id = acc_dict[selected_acc]  # Direct ID mapping
+            target_acc_id = acc_map[selected_acc]
         with c2:
-            start_date = st.date_input("Start Date", datetime.date(2026, 4, 1))
+            selected_loc = st.selectbox("Location Filter", ["All Locations"] + loc_list)
         with c3:
+            start_date = st.date_input("Start Date", datetime.date(2026, 4, 1))
+        with c4:
             end_date = st.date_input("Last Date", datetime.date(2026, 10, 14))
 
         if st.button("Generate Ledger Report", type="primary"):
-            with st.spinner("Processing ledger entries..."):
-                vd = read_table(user_mdb_path, "VoucherDetail") if "VoucherDetail" in tables else pd.DataFrame()
-                vh = read_table(user_mdb_path, "VoucherHeader") if "VoucherHeader" in tables else pd.DataFrame()
+            with st.spinner("Processing ledger entries via MiscMaster..."):
+                vh = read_table(user_mdb_path, "VoucherHeader")
                 bal_data = read_table(user_mdb_path, "BalanceData") if "BalanceData" in tables else pd.DataFrame()
 
-                if vd.empty or vh.empty:
-                    st.warning("VoucherDetail / VoucherHeader tables empty hain.")
-                    st.stop()
-
-                vd_vh_id = find_col(vd, ["VD_VHIdNo", "VHIdNo", "VH_Id", "HeaderId"])
+                vd_vh_id = find_col(vd, ["VD_VHIdNo", "VHIdNo", "VH_Id"])
                 vh_pk = find_col(vh, ["VH_IdNo", "VHIdNo", "VH_Id", "IdNo"])
-                vd_acc_id = find_col(vd, ["VD_AccountIdNo", "AccountIdNo", "AccountId"])
-                
                 vh_date_col = find_col(vh, ["VH_VoucherDate", "VoucherDate", "Date"])
                 vh_no_col = find_col(vh, ["VH_VoucherNo", "VoucherNo", "VouNo"])
-                
+
                 vd_dr_col = find_col(vd, ["VD_DebitAmount", "DebitAmount", "Debit"])
                 vd_cr_col = find_col(vd, ["VD_CreditAmount", "CreditAmount", "Credit"])
-                vd_loc_col = find_col(vd, ["VD_LocationIdNo", "LocationIdNo", "LocationId"])
                 vd_supp_no = find_col(vd, ["VD_SuppVoucherNo", "SuppVoucherNo"])
                 vd_supp_date = find_col(vd, ["VD_SuppVoucherDate", "SuppVoucherDate"])
 
-                # Filter target transactions safely
-                vd[vd_acc_id] = pd.to_numeric(vd[vd_acc_id], errors='coerce')
-                vd_filtered = vd[vd[vd_acc_id] == float(target_acc_id)].copy()
+                # Exact Filter by target_acc_id from MiscMaster
+                vd[vd_acc_col] = pd.to_numeric(vd[vd_acc_col], errors='coerce')
+                filtered_vd = vd[vd[vd_acc_col] == float(target_acc_id)].copy()
 
-                # Merge VoucherDetail with Header
-                merged_v = pd.merge(vd_filtered, vh, left_on=vd_vh_id, right_on=vh_pk, suffixes=('', '_vh'))
-                merged_v['V_Date'] = pd.to_datetime(merged_v[vh_date_col], errors='coerce')
-                
-                # Filter date range
-                mask = (merged_v['V_Date'].dt.date >= start_date) & (merged_v['V_Date'].dt.date <= end_date)
-                ledger_df = merged_v.loc[mask].sort_values(by=['V_Date', vh_no_col])
+                if selected_loc != "All Locations":
+                    chosen_loc_id = loc_map[selected_loc]
+                    filtered_vd = filtered_vd[filtered_vd[vd_loc_col] == chosen_loc_id]
 
-                # Calculate Opening Balance
+                # Merge Detail with Header
+                merged = pd.merge(filtered_vd, vh, left_on=vd_vh_id, right_on=vh_pk, suffixes=('', '_vh'))
+
+                # Filter by Date Range
+                merged['Clean_Date'] = pd.to_datetime(merged[vh_date_col], errors='coerce').dt.date
+                mask = (merged['Clean_Date'] >= start_date) & (merged['Clean_Date'] <= end_date)
+                ledger_rows = merged.loc[mask].copy()
+                ledger_rows = ledger_rows.sort_values(by=['Clean_Date', vh_no_col])
+
+                # Opening Balance from BalanceData
                 op_bal = 0.0
                 if not bal_data.empty:
-                    b_acc = find_col(bal_data, ["Balance_AccountIdNo", "AccountIdNo", "AccountId"])
-                    b_dr = find_col(bal_data, ["Balance_DebitAmount", "DebitAmount", "Debit"])
-                    b_cr = find_col(bal_data, ["Balance_CreditAmount", "CreditAmount", "Credit"])
-                    
-                    bal_data[b_acc] = pd.to_numeric(bal_data[b_acc], errors='coerce')
-                    bal_rows = bal_data[bal_data[b_acc] == float(target_acc_id)]
-                    if not bal_rows.empty:
-                        dr_sum = pd.to_numeric(bal_rows[b_dr], errors='coerce').fillna(0.0).sum()
-                        cr_sum = pd.to_numeric(bal_rows[b_cr], errors='coerce').fillna(0.0).sum()
-                        op_bal = dr_sum - cr_sum
+                    b_acc = find_col(bal_data, ["Balance_AccountIdNo", "AccountIdNo"])
+                    b_loc = find_col(bal_data, ["Balance_LocationIdNo", "LocationIdNo"])
+                    b_dr = find_col(bal_data, ["Balance_DebitAmount", "DebitAmount"])
+                    b_cr = find_col(bal_data, ["Balance_CreditAmount", "CreditAmount"])
 
-                ledger_df['Debit Amount'] = pd.to_numeric(ledger_df[vd_dr_col], errors='coerce').fillna(0.0)
-                ledger_df['Credit Amount'] = pd.to_numeric(ledger_df[vd_cr_col], errors='coerce').fillna(0.0)
-                ledger_df['Net'] = ledger_df['Debit Amount'] - ledger_df['Credit Amount']
-                
-                # Continuous running balance
-                ledger_df['Running Balance'] = op_bal + ledger_df['Net'].cumsum()
-                ledger_df['Running Balance Text'] = ledger_df['Running Balance'].apply(
+                    bal_data[b_acc] = pd.to_numeric(bal_data[b_acc], errors='coerce')
+                    bal_match = bal_data[bal_data[b_acc] == float(target_acc_id)]
+                    if selected_loc != "All Locations":
+                        bal_match = bal_match[bal_match[b_loc] == chosen_loc_id]
+
+                    if not bal_match.empty:
+                        d_sum = pd.to_numeric(bal_match[b_dr], errors='coerce').fillna(0.0).sum()
+                        c_sum = pd.to_numeric(bal_match[b_cr], errors='coerce').fillna(0.0).sum()
+                        op_bal = d_sum - c_sum
+
+                # Debit / Credit amounts
+                ledger_rows['Debit Amount'] = pd.to_numeric(ledger_rows[vd_dr_col], errors='coerce').fillna(0.0)
+                ledger_rows['Credit Amount'] = pd.to_numeric(ledger_rows[vd_cr_col], errors='coerce').fillna(0.0)
+                ledger_rows['Net'] = ledger_rows['Debit Amount'] - ledger_rows['Credit Amount']
+
+                # Running Balance
+                ledger_rows['Running Balance'] = op_bal + ledger_rows['Net'].cumsum()
+                ledger_rows['Running Balance Text'] = ledger_rows['Running Balance'].apply(
                     lambda x: f"{abs(x):,.2f}Dr" if x >= 0 else f"{abs(x):,.2f}Cr"
                 )
 
-                ledger_df['Location Name'] = ledger_df[vd_loc_col].map(loc_map).fillna(ledger_df[vd_loc_col].astype(str))
+                # Location Mapping directly from MiscMaster
+                ledger_rows['Location Name'] = ledger_rows[vd_loc_col].map(all_misc_map).fillna(ledger_rows[vd_loc_col].astype(str))
 
-                # Output without repeated page headers
-                final_view = pd.DataFrame({
-                    "Voucher Date": ledger_df['V_Date'].dt.strftime('%d-%b-%Y'),
-                    "Voucher No.": ledger_df[vh_no_col],
-                    "Supp.VouNo": ledger_df[vd_supp_no].fillna(''),
-                    "Supp.VouDate": ledger_df[vd_supp_date].fillna(''),
-                    "Debit Amount": ledger_df['Debit Amount'],
-                    "Credit Amount": ledger_df['Credit Amount'],
-                    "Location Name": ledger_df['Location Name'],
-                    "Running Balance": ledger_df['Running Balance Text']
+                final_table = pd.DataFrame({
+                    "Voucher Date": pd.to_datetime(ledger_rows['Clean_Date']).dt.strftime('%d-%b-%Y'),
+                    "Voucher No.": ledger_rows[vh_no_col],
+                    "Supp.VouNo": ledger_rows[vd_supp_no].fillna(''),
+                    "Supp.VouDate": ledger_rows[vd_supp_date].fillna(''),
+                    "Debit Amount": ledger_rows['Debit Amount'],
+                    "Credit Amount": ledger_rows['Credit Amount'],
+                    "Location Name": ledger_rows['Location Name'],
+                    "Running Balance": ledger_rows['Running Balance Text']
                 })
 
                 st.markdown("---")
                 st.markdown(f"**Account Desc. :** `{selected_acc}`")
                 st.markdown(f"**Account Opening:** `{abs(op_bal):,.2f}-{'Dr' if op_bal >= 0 else 'Cr'}`")
-                
-                total_dr = final_view['Debit Amount'].sum()
-                total_cr = final_view['Credit Amount'].sum()
-                final_bal = op_bal + total_dr - total_cr
-                
-                col_m1, col_m2, col_m3 = st.columns(3)
-                col_m1.metric("Total Debit", f"₹ {total_dr:,.2f}")
-                col_m2.metric("Total Credit", f"₹ {total_cr:,.2f}")
-                col_m3.metric("Closing Balance", f"{abs(final_bal):,.2f} {'Dr' if final_bal >= 0 else 'Cr'}")
 
-                st.dataframe(final_view, use_container_width=True, height=520)
+                total_dr = final_table['Debit Amount'].sum()
+                total_cr = final_table['Credit Amount'].sum()
+                closing = op_bal + total_dr - total_cr
 
-                # Export to Excel
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Debit", f"₹ {total_dr:,.2f}")
+                m2.metric("Total Credit", f"₹ {total_cr:,.2f}")
+                m3.metric("Closing Balance", f"{abs(closing):,.2f} {'Dr' if closing >= 0 else 'Cr'}")
+
+                st.dataframe(final_table, use_container_width=True, height=520)
+
+                # Excel Download
                 out = io.BytesIO()
                 with pd.ExcelWriter(out, engine='openpyxl') as wr:
-                    final_view.to_excel(wr, index=False, sheet_name="Ledger")
+                    final_table.to_excel(wr, index=False, sheet_name="Ledger")
                 st.download_button(
                     label="📥 Download Continuous Ledger (Excel)",
                     data=out.getvalue(),
@@ -276,8 +282,8 @@ try:
     # 2. TRIAL BALANCE (TB)
     # ==========================================================
     elif report_type == "Trial Balance (TB)":
-        st.subheader("⚖️ Account Trial Balance")
-        
+        st.subheader("⚖️ Account Trial Balance (via MiscMaster)")
+
         t1, t2, t3 = st.columns([1, 1, 1])
         with t1:
             tb_type = st.selectbox("Trial Balance Type", ["Merged Single", "Merged Splitted", "Separate"])
@@ -290,25 +296,26 @@ try:
             with st.spinner("Calculating Trial Balance..."):
                 bal_data = read_table(user_mdb_path, "BalanceData") if "BalanceData" in tables else pd.DataFrame()
                 if bal_data.empty:
-                    st.warning("BalanceData table nahi mila.")
+                    st.warning("BalanceData table empty hai.")
                     st.stop()
 
-                b_acc = find_col(bal_data, ["Balance_AccountIdNo", "AccountIdNo", "AccountId"])
-                b_loc = find_col(bal_data, ["Balance_LocationIdNo", "LocationIdNo", "LocationId"])
-                b_dr = find_col(bal_data, ["Balance_DebitAmount", "DebitAmount", "Debit"])
-                b_cr = find_col(bal_data, ["Balance_CreditAmount", "CreditAmount", "Credit"])
+                b_acc = find_col(bal_data, ["Balance_AccountIdNo", "AccountIdNo"])
+                b_loc = find_col(bal_data, ["Balance_LocationIdNo", "LocationIdNo"])
+                b_dr = find_col(bal_data, ["Balance_DebitAmount", "DebitAmount"])
+                b_cr = find_col(bal_data, ["Balance_CreditAmount", "CreditAmount"])
 
                 bal_data[b_acc] = pd.to_numeric(bal_data[b_acc], errors='coerce')
-                acc_master[acc_id_col] = pd.to_numeric(acc_master[acc_id_col], errors='coerce')
+                bal_data[b_loc] = pd.to_numeric(bal_data[b_loc], errors='coerce')
 
-                tb_df = pd.merge(bal_data, acc_master, left_on=b_acc, right_on=acc_id_col, how="left")
-                tb_df['Location_Display'] = tb_df[b_loc].map(loc_map).fillna(tb_df[b_loc].astype(str))
-                
-                tb_df['Year Opening Dr'] = pd.to_numeric(tb_df[b_dr], errors='coerce').fillna(0.0)
-                tb_df['Year Opening Cr'] = pd.to_numeric(tb_df[b_cr], errors='coerce').fillna(0.0)
+                # Direct map via MiscMaster
+                bal_data['Display_Acc'] = bal_data[b_acc].map(all_misc_map).fillna(bal_data[b_acc].astype(str))
+                bal_data['Location_Display'] = bal_data[b_loc].map(all_misc_map).fillna(bal_data[b_loc].astype(str))
+
+                bal_data['Year Opening Dr'] = pd.to_numeric(bal_data[b_dr], errors='coerce').fillna(0.0)
+                bal_data['Year Opening Cr'] = pd.to_numeric(bal_data[b_cr], errors='coerce').fillna(0.0)
 
                 if tb_type == "Merged Single":
-                    tb_res = tb_df.groupby(['Display_Acc']).agg({
+                    tb_res = bal_data.groupby(['Display_Acc']).agg({
                         'Year Opening Dr': 'sum',
                         'Year Opening Cr': 'sum'
                     }).reset_index()
@@ -320,44 +327,4 @@ try:
 
                     out_tb = io.BytesIO()
                     with pd.ExcelWriter(out_tb, engine='openpyxl') as wr:
-                        tb_res.to_excel(wr, index=False, sheet_name="TB_Merged_Single")
-                    st.download_button("📥 Download Merged Single TB (Excel)", out_tb.getvalue(), "TB_Merged_Single.xlsx")
-
-                elif tb_type == "Merged Splitted":
-                    tb_res = tb_df.groupby(['Display_Acc', 'Location_Display']).agg({
-                        'Year Opening Dr': 'sum',
-                        'Year Opening Cr': 'sum'
-                    }).reset_index()
-
-                    st.dataframe(tb_res, use_container_width=True, height=600)
-
-                    out_tb = io.BytesIO()
-                    with pd.ExcelWriter(out_tb, engine='openpyxl') as wr:
-                        tb_res.to_excel(wr, index=False, sheet_name="TB_Merged_Splitted")
-                    st.download_button("📥 Download Merged Splitted TB (Excel)", out_tb.getvalue(), "TB_Merged_Splitted.xlsx")
-
-                elif tb_type == "Separate":
-                    locs = sorted(tb_df['Location_Display'].dropna().unique().tolist())
-                    chosen_loc = st.selectbox("Choose Location", locs)
-                    
-                    tb_loc = tb_df[tb_df['Location_Display'] == chosen_loc].groupby(['Display_Acc']).agg({
-                        'Year Opening Dr': 'sum',
-                        'Year Opening Cr': 'sum'
-                    }).reset_index()
-                    
-                    st.dataframe(tb_loc, use_container_width=True, height=600)
-
-    # ==========================================================
-    # 3. RAW TABLE BROWSER
-    # ==========================================================
-    elif report_type == "Raw Table Browser":
-        st.subheader("🔍 Explore Tables")
-        sel_t = st.selectbox("Select Table", tables)
-        if sel_t:
-            df_view = read_table(user_mdb_path, sel_t)
-            st.write(f"Total Rows: {len(df_view)} | Columns: {list(df_view.columns)}")
-            st.dataframe(df_view.head(200), use_container_width=True)
-
-except Exception as e:
-    st.error(f"Execution Error: {e}")
-    st.code(traceback.format_exc())
+                        tb_res.to_excel(wr
